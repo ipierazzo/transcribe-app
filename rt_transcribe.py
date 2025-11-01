@@ -51,14 +51,31 @@ def detect_audio_activity(audio_data, threshold=0.005):
 
 def transcribe_file(file_path, model, language="pt", output_file=None):
     """Transcribe an audio file."""
+    # Normalizar caminho do arquivo (importante para Windows)
+    file_path = os.path.abspath(os.path.normpath(file_path))
+    
     if not os.path.exists(file_path):
         print(f"❌ Arquivo não encontrado: {file_path}")
+        print(f"📁 Diretório atual: {os.getcwd()}")
+        print(f"📋 Listando arquivos no diretório atual:")
+        try:
+            for f in os.listdir('.'):
+                print(f"   - {f}")
+        except Exception as e:
+            print(f"   Erro ao listar diretório: {e}")
+        sys.exit(1)
+    
+    # Verificar se é um arquivo (não diretório)
+    if not os.path.isfile(file_path):
+        print(f"❌ Caminho especificado não é um arquivo: {file_path}")
         sys.exit(1)
     
     print(f"📂 Processando arquivo: {file_path}")
+    print(f"📏 Tamanho do arquivo: {os.path.getsize(file_path) / (1024*1024):.2f} MB")
     print("🎤 Transcrevendo...")
     
     try:
+        # Usar caminho absoluto normalizado para evitar problemas no Windows
         result = model.transcribe(file_path, language=language)
         text = result['text'].strip()
         
@@ -72,6 +89,13 @@ def transcribe_file(file_path, model, language="pt", output_file=None):
             # Save to file if output_file is specified
             if output_file:
                 try:
+                    # Normalizar caminho de saída também
+                    output_file = os.path.abspath(os.path.normpath(output_file))
+                    # Criar diretório se não existir
+                    output_dir = os.path.dirname(output_file)
+                    if output_dir and not os.path.exists(output_dir):
+                        os.makedirs(output_dir, exist_ok=True)
+                    
                     with open(output_file, 'w', encoding='utf-8') as f:
                         f.write(text)
                     print(f"\n💾 Transcrição salva em: {output_file}")
@@ -80,8 +104,30 @@ def transcribe_file(file_path, model, language="pt", output_file=None):
         else:
             print("🔇 Nenhuma fala detectada no áudio")
             
+    except FileNotFoundError as e:
+        print(f"❌ Erro: Arquivo ou dependência não encontrada")
+        print(f"   Detalhes: {e}")
+        print(f"\n💡 Possíveis soluções:")
+        print(f"   1. Verifique se o arquivo existe: {file_path}")
+        print(f"   2. No Windows, certifique-se de que o ffmpeg está instalado e no PATH")
+        print(f"   3. Tente usar o caminho completo do arquivo (ex: C:\\pasta\\arquivo.mp3)")
+        print(f"   4. Verifique se há espaços no caminho e use aspas se necessário")
+        sys.exit(1)
     except Exception as e:
-        print(f"❌ Erro na transcrição: {e}")
+        error_msg = str(e)
+        print(f"❌ Erro na transcrição: {error_msg}")
+        
+        # Dicas específicas para Windows
+        if "winderror" in error_msg.lower() or "cannot find" in error_msg.lower():
+            print(f"\n💡 Este erro geralmente indica:")
+            print(f"   1. Arquivo não encontrado ou caminho incorreto")
+            print(f"   2. ffmpeg não instalado ou não no PATH")
+            print(f"   3. Problema com espaços ou caracteres especiais no caminho")
+            print(f"\n🔧 Soluções:")
+            print(f"   - Use caminho absoluto: python rt_transcribe.py --file \"C:\\caminho\\completo\\arquivo.mp3\"")
+            print(f"   - Verifique instalação do ffmpeg: ffmpeg -version")
+            print(f"   - Tente mover o arquivo para um caminho sem espaços")
+        
         sys.exit(1)
 
 def transcribe_realtime(model, language="pt"):
