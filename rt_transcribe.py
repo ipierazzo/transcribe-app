@@ -49,7 +49,27 @@ def detect_audio_activity(audio_data, threshold=0.005):
     rms = np.sqrt(np.mean(audio_data**2))
     return rms > threshold
 
-def transcribe_file(file_path, model, language="pt", output_file=None):
+def show_progress_indicator(stop_event):
+    """Mostra indicador de progresso enquanto transcreve."""
+    # Usar caracteres ASCII simples para compatibilidade com Windows CMD
+    indicators = ["|", "/", "-", "\\"]
+    messages = [
+        "Processando áudio",
+        "Analisando conteúdo",
+        "Transcrevendo",
+        "Finalizando"
+    ]
+    i = 0
+    dots = ""
+    while not stop_event.is_set():
+        indicator = indicators[i % len(indicators)]
+        message = messages[(i // 4) % len(messages)]
+        dots = "." * ((i // 2) % 4)
+        print(f"\r[ {indicator} ] {message}{dots}", end="", flush=True)
+        i += 1
+        time.sleep(0.3)
+
+def transcribe_file(file_path, model, language="pt", output_file=None, model_name="tiny"):
     """Transcribe an audio file."""
     # Normalizar caminho do arquivo (importante para Windows)
     file_path = os.path.abspath(os.path.normpath(file_path))
@@ -70,13 +90,42 @@ def transcribe_file(file_path, model, language="pt", output_file=None):
         print(f"❌ Caminho especificado não é um arquivo: {file_path}")
         sys.exit(1)
     
-    print(f"📂 Processando arquivo: {file_path}")
-    print(f"📏 Tamanho do arquivo: {os.path.getsize(file_path) / (1024*1024):.2f} MB")
-    print("🎤 Transcrevendo...")
+    file_size_mb = os.path.getsize(file_path) / (1024*1024)
+    file_name = os.path.basename(file_path)
+    
+    # Informações do arquivo
+    print("\n" + "="*60)
+    print("📋 INFORMAÇÕES DO ARQUIVO")
+    print("="*60)
+    print(f"📂 Arquivo: {file_name}")
+    print(f"📁 Caminho: {file_path}")
+    print(f"📏 Tamanho: {file_size_mb:.2f} MB")
+    print(f"🌐 Idioma: {language.upper()}")
+    print(f"🤖 Modelo: {model_name}")
+    print("="*60)
+    print("\n🎤 INICIANDO TRANSCRIÇÃO...")
+    print("⏳ Isso pode levar alguns minutos dependendo do tamanho do arquivo...")
+    print("💡 Aguarde enquanto processamos o áudio...\n")
+    
+    start_time = time.time()
+    stop_event = threading.Event()
+    
+    # Iniciar indicador de progresso em thread separada
+    progress_thread = threading.Thread(target=show_progress_indicator, args=(stop_event,), daemon=True)
+    progress_thread.start()
     
     try:
         # Usar caminho absoluto normalizado para evitar problemas no Windows
         result = model.transcribe(file_path, language=language)
+        
+        # Parar indicador de progresso
+        stop_event.set()
+        progress_thread.join(timeout=0.5)
+        
+        elapsed_time = time.time() - start_time
+        
+        print(f"\r✅ Transcrição concluída em {elapsed_time:.1f} segundos!{' ' * 50}")
+        print("="*60)
         text = result['text'].strip()
         
         if text:
@@ -265,7 +314,7 @@ def main():
     
     # Process file or realtime
     if args.file:
-        transcribe_file(args.file, model, args.language, args.output)
+        transcribe_file(args.file, model, args.language, args.output, args.model)
     elif args.realtime:
         main_realtime(model, args.language)
 
