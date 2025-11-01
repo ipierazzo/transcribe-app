@@ -50,6 +50,7 @@ Thumbs.db
 *.ogg
 transcript.txt
 *.txt
+!requirements.txt
 
 # Database
 *.db
