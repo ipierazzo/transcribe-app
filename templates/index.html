@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Transcrição e Análise com IA</title>
+    <!-- TailwindCSS via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen py-8">
+    <div class="container mx-auto px-4 max-w-6xl">
+        <h1 class="text-4xl font-bold text-center mb-8 text-gray-800">
+            Sistema de Transcrição e Análise com IA
+        </h1>
+
+        <!-- Controles -->
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+            <div class="flex justify-center gap-4">
+                <button 
+                    id="btnIniciar" 
+                    class="bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-6 rounded-lg transition duration-200 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                >
+                    🎤 Iniciar Gravação
+                </button>
+                <button 
+                    id="btnParar" 
+                    class="bg-red-500 hover:bg-red-600 text-white font-bold py-3 px-6 rounded-lg transition duration-200 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                    disabled
+                >
+                    ⏹️ Parar e Analisar
+                </button>
+                <button 
+                    id="btnLimpar" 
+                    class="bg-gray-500 hover:bg-gray-600 text-white font-bold py-3 px-6 rounded-lg transition duration-200"
+                >
+                    🗑️ Limpar
+                </button>
+            </div>
+            
+            <!-- Status -->
+            <div id="status" class="mt-4 text-center text-gray-600">
+                <span id="statusTexto">Pronto para iniciar</span>
+            </div>
+        </div>
+
+        <!-- Área de Transcrição -->
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+            <h2 class="text-2xl font-semibold mb-4 text-gray-700">Transcrição em Tempo Real</h2>
+            <div 
+                id="transcricao" 
+                class="bg-gray-50 border-2 border-gray-300 rounded-lg p-4 min-h-[300px] max-h-[400px] overflow-y-auto text-gray-800 whitespace-pre-wrap"
+            >
+                <p class="text-gray-400 italic">A transcrição aparecerá aqui...</p>
+            </div>
+            <div class="mt-2 text-sm text-gray-500">
+                Caracteres: <span id="contador">0</span>
+            </div>
+        </div>
+
+        <!-- Área de Resultado da IA -->
+        <div class="bg-white rounded-lg shadow-lg p-6">
+            <h2 class="text-2xl font-semibold mb-4 text-gray-700">Análise da IA</h2>
+            <div 
+                id="resultado" 
+                class="bg-blue-50 border-2 border-blue-300 rounded-lg p-4 min-h-[200px] text-gray-800 whitespace-pre-wrap"
+            >
+                <p class="text-gray-400 italic">A análise aparecerá aqui após clicar em "Parar e Analisar"...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Variáveis globais
+        let recognition = null;
+        let websocket = null;
+        let isRecording = false;
+        let clientId = null;
+        let transcriptionText = "";
+        
+        // #region agent log
+        const LOG_ENDPOINT = 'http://127.0.0.1:7242/ingest/e32b9f29-9aec-4b65-a399-bae00a10c41e';
+        function logDebug(sessionId, runId, hypothesisId, location, message, data) {
+            fetch(LOG_ENDPOINT, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    sessionId: sessionId,
+                    runId: runId,
+                    hypothesisId: hypothesisId,
+                    location: location,
+                    message: message,
+                    data: data,
+                    timestamp: Date.now()
+                })
+            }).catch(() => {});
+        }
+        // #endregion
+
+        // Gera ID único para o cliente
+        function generateClientId() {
+            return 'client_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        }
+
+        // Inicializa Web Speech API
+        function initSpeechRecognition() {
+            // Verifica suporte
+            if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+                alert('Seu navegador não suporta Web Speech API. Use Chrome, Edge ou Safari.');
+                return null;
+            }
+
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            const recognition = new SpeechRecognition();
+
+            // Configurações
+            recognition.continuous = true;  // Continua ouvindo
+            recognition.interimResults = true;  // Mostra resultados intermediários
+            recognition.lang = 'pt-BR';  // Idioma português brasileiro
+
+            // Event handlers
+            recognition.onstart = () => {
+                console.log('Reconhecimento de voz iniciado');
+                updateStatus('🎤 Gravando...', 'text-green-600');
+            };
+
+            recognition.onresult = (event) => {
+                let interimTranscript = '';
+                let finalTranscript = '';
+
+                // Processa resultados
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    const transcript = event.results[i][0].transcript;
+                    if (event.results[i].isFinal) {
+                        finalTranscript += transcript + ' ';
+                    } else {
+                        interimTranscript += transcript;
+                    }
+                }
+
+                // Atualiza transcrição na tela
+                if (finalTranscript) {
+                    // #region agent log
+                    logDebug('debug-session', 'run1', 'B', 'index.html:125', 'Final transcript received', {finalTranscriptLength: finalTranscript.length, beforeLength: transcriptionText.length, websocketReady: websocket && websocket.readyState === WebSocket.OPEN});
+                    // #endregion
+                    transcriptionText += finalTranscript;
+                    updateTranscriptionDisplay();
+                    
+                    // Envia para backend via WebSocket
+                    if (websocket && websocket.readyState === WebSocket.OPEN) {
+                        const message = {type: 'texto', texto: finalTranscript.trim()};
+                        // #region agent log
+                        logDebug('debug-session', 'run1', 'B', 'index.html:133', 'Sending text fragment to backend', {clientId: clientId, textoLength: message.texto.length, textoPreview: message.texto.substring(0, 50)});
+                        // #endregion
+                        websocket.send(JSON.stringify(message));
+                    } else {
+                        // #region agent log
+                        logDebug('debug-session', 'run1', 'A', 'index.html:137', 'WebSocket not ready for text send', {clientId: clientId, readyState: websocket ? websocket.readyState : 'null'});
+                        // #endregion
+                    }
+                } else {
+                    // Mostra resultado intermediário
+                    updateTranscriptionDisplay(interimTranscript);
+                }
+            };
+
+            recognition.onerror = (event) => {
+                console.error('Erro no reconhecimento:', event.error);
+                
+                if (event.error === 'no-speech') {
+                    // Silenciosamente reinicia se não houver fala
+                    if (isRecording) {
+                        setTimeout(() => {
+                            if (isRecording && recognition) {
+                                try {
+                                    recognition.start();
+                                } catch (e) {
+                                    console.log('Tentativa de reiniciar reconhecimento...');
+                                }
+                            }
+                        }, 1000);
+                    }
+                } else if (event.error === 'network') {
+                    updateStatus('❌ Erro de rede. Tentando reconectar...', 'text-red-600');
+                    // Tenta reconectar
+                    if (isRecording) {
+                        setTimeout(() => {
+                            if (isRecording) {
+                                initSpeechRecognition();
+                                recognition.start();
+                            }
+                        }, 2000);
+                    }
+                } else {
+                    updateStatus(`❌ Erro: ${event.error}`, 'text-red-600');
+                }
+            };
+
+            recognition.onend = () => {
+                console.log('Reconhecimento de voz finalizado');
+                
+                // Se ainda estiver gravando, reinicia automaticamente
+                if (isRecording) {
+                    updateStatus('🔄 Reiniciando reconhecimento...', 'text-yellow-600');
+                    setTimeout(() => {
+                        if (isRecording && recognition) {
+                            try {
+                                recognition.start();
+                            } catch (e) {
+                                console.log('Erro ao reiniciar:', e);
+                                // Tenta criar nova instância
+                                if (isRecording) {
+                                    initSpeechRecognition();
+                                    recognition.start();
+                                }
+                            }
+                        }
+                    }, 500);
+                } else {
+                    updateStatus('Parado', 'text-gray-600');
+                }
+            };
+
+            return recognition;
+        }
+
+        // Conecta WebSocket
+        function connectWebSocket() {
+            clientId = generateClientId();
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws/${clientId}`;
+            // #region agent log
+            logDebug('debug-session', 'run1', 'A', 'index.html:201', 'WebSocket connection attempt', {clientId: clientId, wsUrl: wsUrl});
+            // #endregion
+            
+            websocket = new WebSocket(wsUrl);
+
+            websocket.onopen = () => {
+                console.log('WebSocket conectado');
+                // #region agent log
+                logDebug('debug-session', 'run1', 'A', 'index.html:208', 'WebSocket opened', {clientId: clientId, readyState: websocket.readyState});
+                // #endregion
+                updateStatus('✅ Conectado e gravando', 'text-green-600');
+            };
+
+            websocket.onmessage = (event) => {
+                // #region agent log
+                logDebug('debug-session', 'run1', 'A', 'index.html:214', 'WebSocket message received', {clientId: clientId, dataLength: event.data.length, dataPreview: event.data.substring(0, 100)});
+                // #endregion
+                let data;
+                try {
+                    data = JSON.parse(event.data);
+                } catch (e) {
+                    // #region agent log
+                    logDebug('debug-session', 'run1', 'D', 'index.html:220', 'JSON parse error in WebSocket message', {clientId: clientId, error: e.message, data: event.data.substring(0, 200)});
+                    // #endregion
+                    return;
+                }
+                // #region agent log
+                logDebug('debug-session', 'run1', 'D', 'index.html:225', 'WebSocket message parsed', {clientId: clientId, messageType: data.type});
+                // #endregion
+                
+                if (data.type === 'analise_completa') {
+                    // #region agent log
+                    logDebug('debug-session', 'run1', 'C', 'index.html:229', 'Analysis complete received', {clientId: clientId, resultadoLength: data.resultado ? data.resultado.length : 0});
+                    // #endregion
+                    // Mostra resultado da análise na área de resultado
+                    const resultadoEl = document.getElementById('resultado');
+                    if (data.resultado && data.resultado.trim()) {
+                        resultadoEl.textContent = data.resultado;
+                        resultadoEl.classList.remove('text-gray-400', 'italic');
+                        resultadoEl.classList.add('text-gray-800');
+                    } else {
+                        resultadoEl.innerHTML = '<p class="text-gray-400 italic">Nenhuma análise retornada.</p>';
+                    }
+                    updateStatus('✅ Análise concluída!', 'text-green-600');
+                    document.getElementById('btnParar').disabled = false;
+                } else if (data.type === 'erro') {
+                    // #region agent log
+                    logDebug('debug-session', 'run1', 'A', 'index.html:235', 'Error message received', {clientId: clientId, mensagem: data.mensagem});
+                    // #endregion
+                    updateStatus(`❌ ${data.mensagem}`, 'text-red-600');
+                    alert('Erro: ' + data.mensagem);
+                } else if (data.type === 'confirmacao') {
+                    // #region agent log
+                    logDebug('debug-session', 'run1', 'B', 'index.html:240', 'Confirmation received', {clientId: clientId, status: data.status});
+                    // #endregion
+                    console.log('Confirmação recebida:', data.status);
+                }
+            };
+
+            websocket.onerror = (error) => {
+                console.error('Erro no WebSocket:', error);
+                // #region agent log
+                logDebug('debug-session', 'run1', 'A', 'index.html:245', 'WebSocket error', {clientId: clientId, error: error.toString()});
+                // #endregion
+                updateStatus('❌ Erro na conexão WebSocket', 'text-red-600');
+            };
+
+            websocket.onclose = () => {
+                console.log('WebSocket desconectado');
+                // #region agent log
+                logDebug('debug-session', 'run1', 'A', 'index.html:252', 'WebSocket closed', {clientId: clientId, isRecording: isRecording, readyState: websocket.readyState});
+                // #endregion
+                if (isRecording) {
+                    updateStatus('⚠️ Conexão perdida. Tentando reconectar...', 'text-yellow-600');
+                    // Tenta reconectar após 2 segundos
+                    setTimeout(() => {
+                        if (isRecording) {
+                            connectWebSocket();
+                        }
+                    }, 2000);
+                }
+            };
+        }
+
+        // Atualiza display da transcrição
+        function updateTranscriptionDisplay(interim = '') {
+            const display = document.getElementById('transcricao');
+            const fullText = transcriptionText + (interim ? ' ' + interim : '');
+            display.textContent = fullText || 'A transcrição aparecerá aqui...';
+            
+            // Atualiza contador
+            document.getElementById('contador').textContent = fullText.length;
+            
+            // Auto-scroll para o final
+            display.scrollTop = display.scrollHeight;
+        }
+
+        // Atualiza status
+        function updateStatus(texto, classe = 'text-gray-600') {
+            const statusEl = document.getElementById('statusTexto');
+            statusEl.textContent = texto;
+            statusEl.className = classe;
+        }
+
+        // Botão Iniciar
+        document.getElementById('btnIniciar').addEventListener('click', () => {
+            if (!isRecording) {
+                isRecording = true;
+                transcriptionText = '';
+                updateTranscriptionDisplay();
+                
+                // Inicializa reconhecimento de voz
+                recognition = initSpeechRecognition();
+                if (recognition) {
+                    recognition.start();
+                }
+                
+                // Conecta WebSocket
+                connectWebSocket();
+                
+                // Atualiza UI
+                document.getElementById('btnIniciar').disabled = true;
+                document.getElementById('btnParar').disabled = false;
+                document.getElementById('resultado').textContent = 'Processando...';
+            }
+        });
+
+        // Botão Parar
+        document.getElementById('btnParar').addEventListener('click', () => {
+            if (isRecording) {
+                // #region agent log
+                logDebug('debug-session', 'run1', 'B', 'index.html:293', 'Stop button clicked', {clientId: clientId, transcriptionLength: transcriptionText.length, websocketReady: websocket && websocket.readyState === WebSocket.OPEN});
+                // #endregion
+                isRecording = false;
+                
+                // Para reconhecimento
+                if (recognition) {
+                    recognition.stop();
+                    recognition = null;
+                }
+                
+                // Envia comando de fim para backend
+                if (websocket && websocket.readyState === WebSocket.OPEN) {
+                    // #region agent log
+                    logDebug('debug-session', 'run1', 'B', 'index.html:304', 'Sending fim command', {clientId: clientId});
+                    // #endregion
+                    websocket.send(JSON.stringify({ type: 'fim' }));
+                    updateStatus('⏳ Processando análise com IA...', 'text-yellow-600');
+                    document.getElementById('btnParar').disabled = true;
+                } else {
+                    // #region agent log
+                    logDebug('debug-session', 'run1', 'A', 'index.html:309', 'WebSocket not ready for fim command', {clientId: clientId, readyState: websocket ? websocket.readyState : 'null'});
+                    // #endregion
+                    alert('WebSocket não conectado. Não foi possível enviar para análise.');
+                }
+                
+                // Atualiza UI
+                document.getElementById('btnIniciar').disabled = false;
+            }
+        });
+
+        // Botão Limpar
+        document.getElementById('btnLimpar').addEventListener('click', () => {
+            // Limpa transcrição
+            transcriptionText = '';
+            updateTranscriptionDisplay();
+            document.getElementById('contador').textContent = '0';
+            
+            // Limpa análise
+            const resultadoEl = document.getElementById('resultado');
+            resultadoEl.innerHTML = '<p class="text-gray-400 italic">A análise aparecerá aqui após clicar em "Parar e Analisar"...</p>';
+            resultadoEl.classList.remove('text-gray-800');
+            resultadoEl.classList.add('text-gray-400', 'italic');
+            
+            // Limpa status
+            updateStatus('Pronto para iniciar', 'text-gray-600');
+            
+            // Limpa no backend também
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                websocket.send(JSON.stringify({ type: 'limpar' }));
+            }
+        });
+
+        // Limpa recursos ao fechar página
+        window.addEventListener('beforeunload', () => {
+            if (recognition) {
+                recognition.stop();
+            }
+            if (websocket) {
+                websocket.close();
+            }
+        });
+    </script>
+</body>
+</html>
+

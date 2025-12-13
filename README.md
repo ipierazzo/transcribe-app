@@ -1,126 +1,98 @@
-# MedIA - Transcrição de Áudio com Whisper
+# Sistema de Transcrição de Áudio em Tempo Real com Análise de IA
 
-Script CLI para transcrição de áudio usando o modelo Whisper da OpenAI.
+MVP completo para transcrição de consultas longas (60-80 minutos) com análise usando Groq API.
 
-## Instalação
+## 🚀 Características
 
+- **Transcrição em Tempo Real**: Usa Web Speech API nativa do navegador
+- **Análise com IA**: Processa transcrições completas com Groq (llama-3.3-70b-versatile)
+- **Interface Moderna**: UI responsiva com TailwindCSS
+- **Reconexão Automática**: Reinicia reconhecimento de voz automaticamente
+- **WebSocket**: Comunicação em tempo real entre frontend e backend
+
+## 📋 Pré-requisitos
+
+- Python 3.8+
+- Navegador moderno com suporte a Web Speech API (Chrome, Edge, Safari)
+- Chave da API Groq (obtenha em: https://console.groq.com/)
+
+## 🔧 Instalação
+
+1. **Clone ou navegue até o diretório do projeto**
+
+2. **Instale as dependências:**
 ```bash
 pip install -r requirements.txt
 ```
 
-## Uso
-
-### Transcrever arquivo de áudio
-
+3. **Configure a chave da API Groq:**
+   
+   Crie um arquivo `.env` na raiz do projeto:
 ```bash
-python rt_transcribe.py --file caminho/para/audio.mp3
+GROQ_API_KEY=sua_chave_groq_aqui
+GROQ_MODEL=llama-3.3-70b-versatile  # Opcional: modelo a ser usado (padrão: llama-3.3-70b-versatile)
 ```
 
-### Salvar transcrição em arquivo
+   **Modelos alternativos disponíveis:**
+   - `llama-3.3-70b-versatile` (padrão, recomendado)
+   - `llama-3.1-8b-instant` (mais rápido, menor custo)
+   - `mixtral-8x7b-32768` (alternativa)
+   - `gemma2-9b-it` (alternativa)
+   
+   Consulte https://console.groq.com/docs/models para modelos atualizados.
 
+## 🎯 Como Usar
+
+1. **Inicie o servidor:**
 ```bash
-python rt_transcribe.py --file audio.mp3 --output resultado.txt
+python main.py
 ```
 
-### Especificar modelo e idioma
-
+   Ou usando uvicorn diretamente:
 ```bash
-python rt_transcribe.py --file audio.mp3 --model base --language en
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### Modo tempo real (microfone)
+2. **Acesse a interface:**
+   Abra seu navegador em: `http://localhost:8000`
 
-```bash
-python rt_transcribe.py --realtime
+3. **Use o sistema:**
+   - Clique em "Iniciar Gravação" para começar a transcrever
+   - A transcrição aparecerá em tempo real na tela
+   - Clique em "Parar e Analisar" para processar com a IA
+   - A análise estruturada aparecerá na área de resultado
+
+## 📁 Estrutura do Projeto
+
+```
+medIA/
+├── main.py              # Backend FastAPI com WebSocket
+├── requirements.txt     # Dependências Python
+├── .env                 # Variáveis de ambiente (criar manualmente)
+├── templates/
+│   └── index.html      # Interface frontend
+└── README.md           # Este arquivo
 ```
 
-### Ver ajuda
+## 🔌 Endpoints
 
-```bash
-python rt_transcribe.py --help
-```
+- `GET /`: Interface web
+- `WebSocket /ws/{client_id}`: Conexão para receber transcrições
 
-## Opções Disponíveis
+## 🛠️ Tecnologias
 
-- `--file` ou `-f`: Caminho do arquivo de áudio para transcrever
-- `--realtime` ou `-r`: Modo de transcrição em tempo real do microfone
-- `--model` ou `-m`: Tamanho do modelo Whisper (tiny, base, small, medium, large). Padrão: tiny
-- `--language` ou `-l`: Idioma para transcrição (padrão: pt). Use códigos ISO 639-1 (pt, en, es, etc.)
-- `--output` ou `-o`: Arquivo de saída para salvar a transcrição
+- **Backend**: FastAPI, Uvicorn, WebSockets
+- **Frontend**: HTML5, JavaScript (Web Speech API), TailwindCSS
+- **IA**: Groq SDK (Model: llama-3.3-70b-versatile)
 
-## Formatos de Áudio Suportados
+## ⚠️ Notas Importantes
 
-MP3, WAV, FLAC, M4A, OGG e outros formatos comuns.
+- A Web Speech API funciona melhor no Chrome/Edge
+- O reconhecimento pode parar automaticamente após períodos de silêncio - o sistema reinicia automaticamente
+- Certifique-se de ter uma conexão estável com a internet para a API Groq
+- O sistema acumula transcrições em memória durante a sessão
 
-## Modelos Whisper
+## 📝 Licença
 
-- `tiny`: Mais rápido, menor precisão
-- `base`: Equilíbrio entre velocidade e precisão
-- `small`: Melhor precisão, mais lento
-- `medium`: Alta precisão, muito lento
-- `large`: Máxima precisão, muito lento
-
-O modelo padrão é `tiny`. Modelos maiores oferecem melhor precisão mas são significativamente mais lentos.
-
-## Pré-requisitos
-
-### ffmpeg (Obrigatório)
-
-O Whisper requer o ffmpeg para processar arquivos de áudio. Certifique-se de que está instalado:
-
-**Windows:**
-```bash
-# Verificar se está instalado
-ffmpeg -version
-
-# Se não estiver, baixe de: https://ffmpeg.org/download.html
-# Ou use Chocolatey: choco install ffmpeg
-# Ou use winget: winget install ffmpeg
-```
-
-**Linux:**
-```bash
-sudo dnf install ffmpeg  # Fedora
-sudo apt-get install ffmpeg  # Ubuntu/Debian
-```
-
-**macOS:**
-```bash
-brew install ffmpeg
-```
-
-## Troubleshooting
-
-### Erro "winderror2" ou "arquivo não encontrado" no Windows
-
-Este erro geralmente ocorre por:
-
-1. **Caminho do arquivo incorreto**
-   - Use caminho absoluto com aspas: `python rt_transcribe.py --file "C:\pasta\arquivo.mp3"`
-   - Se o arquivo está no mesmo diretório: `python rt_transcribe.py --file .\arquivo.mp3`
-
-2. **ffmpeg não instalado ou não no PATH**
-   - Verifique: `ffmpeg -version` no CMD
-   - Se não funcionar, reinstale o ffmpeg e adicione ao PATH do sistema
-
-3. **Espaços no caminho**
-   - Sempre use aspas: `--file "C:\Minha Pasta\arquivo.mp3"`
-
-4. **Caminho relativo não funciona**
-   - Tente usar caminho absoluto completo
-   - Ou navegue até o diretório do arquivo antes de executar
-
-### Exemplo de uso no Windows
-
-```cmd
-# Com caminho absoluto
-python rt_transcribe.py --file "C:\Users\Usuario\Musicas\audio.mp3"
-
-# Com caminho relativo (se estiver no mesmo diretório)
-cd C:\pasta\com\audio
-python rt_transcribe.py --file audio.mp3
-
-# Com espaços no caminho (sempre usar aspas)
-python rt_transcribe.py --file "C:\Minha Pasta\Meu Audio.mp3"
-```
+Este é um projeto MVP para demonstração.
 
