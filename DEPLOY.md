@@ -26,8 +26,11 @@ Certifique-se de que seu código está em um repositório Git (GitHub, GitLab ou
 **Configurações Básicas:**
 - **Name**: `medIA` (ou o nome que preferir)
 - **Environment**: `Python 3`
+- **Python Version**: `3.12` (especificado no `.python-version` ou `render.yaml`)
 - **Build Command**: `pip install -r requirements.txt`
 - **Start Command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+
+**Nota:** O arquivo `.python-version` na raiz do projeto especifica Python 3.12 automaticamente.
 
 **Ou use o arquivo `render.yaml`:**
 - Render detectará automaticamente o arquivo `render.yaml` na raiz do projeto
@@ -38,7 +41,7 @@ Certifique-se de que seu código está em um repositório Git (GitHub, GitLab ou
 No painel do serviço, vá em **"Environment"** e adicione:
 
 **Obrigatório:**
-- `GROQ_API_KEY`: Sua chave da API Groq (obtenha em https://console.groq.com/)
+- ` `: Sua chave da API Groq (obtenha em https://console.groq.com/)
 
 **Opcional (para usar Whisper):**
 - `OPENAI_API_KEY`: Sua chave da API OpenAI (se quiser usar Whisper para transcrição)
@@ -92,6 +95,13 @@ Para desabilitar:
 - **CPU**: Compartilhado (plano gratuito)
 
 ## 🐛 Troubleshooting
+
+### Erro: "TypeError: Client.__init__() got an unexpected keyword argument 'proxies'"
+
+- Este erro indica incompatibilidade de versões
+- Certifique-se de que está usando versões atualizadas das bibliotecas
+- O `requirements.txt` já está configurado com versões compatíveis
+- Se persistir, tente especificar Python 3.12 no `runtime.txt`
 
 ### Erro: "Module not found"
 
