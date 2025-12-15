@@ -92,6 +92,16 @@ medIA/
 - Certifique-se de ter uma conexão estável com a internet para a API Groq
 - O sistema acumula transcrições em memória durante a sessão
 
+## 🚀 Deploy
+
+Este projeto está preparado para deploy no Render.com. Veja o guia completo em [DEPLOY.md](./DEPLOY.md).
+
+**Deploy rápido:**
+1. Faça push do código para um repositório Git
+2. Crie um novo Web Service no Render.com
+3. Configure as variáveis de ambiente (`GROQ_API_KEY` e opcionalmente `OPENAI_API_KEY`)
+4. Use o arquivo `render.yaml` para configuração automática
+
 ## 📝 Licença
 
 Este é um projeto MVP para demonstração.

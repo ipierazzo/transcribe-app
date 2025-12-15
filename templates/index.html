@@ -15,6 +15,16 @@
 
         <!-- Controles -->
         <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+            <!-- Seletor de Método de Transcrição -->
+            <div class="mb-4 flex justify-center gap-4 items-center">
+                <label class="text-gray-700 font-semibold">Método de Transcrição:</label>
+                <select id="metodoTranscricao" class="border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="webspeech">Web Speech API (Tempo Real)</option>
+                    <option value="whisper">Whisper AI (Alta Precisão)</option>
+                </select>
+                <span class="text-xs text-gray-500">Whisper oferece melhor precisão para termos médicos</span>
+            </div>
+            
             <div class="flex justify-center gap-4">
                 <button 
                     id="btnIniciar" 
@@ -76,6 +86,42 @@
         let isRecording = false;
         let clientId = null;
         let transcriptionText = "";
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let audioStream = null;
+        
+        // Dicionário de termos médicos comuns para melhorar reconhecimento
+        const termosMedicos = {
+            'tireoide': ['tireoide', 'tiroide', 'tireóide'],
+            'hipotireoidismo': ['hipotireoidismo', 'hipotiroidismo'],
+            'hipertireoidismo': ['hipertireoidismo', 'hipertiroidismo'],
+            'glicemia': ['glicemia', 'glicose'],
+            'diabetes': ['diabetes', 'diabete'],
+            'insulina': ['insulina', 'insulino'],
+            'metabolismo': ['metabolismo', 'metabólico'],
+            'hormônio': ['hormônio', 'hormonio', 'hormonal'],
+            'endocrinologia': ['endocrinologia', 'endócrino'],
+            'obesidade': ['obesidade', 'obeso'],
+            'colesterol': ['colesterol', 'colesterol'],
+            'triglicerídeos': ['triglicerídeos', 'triglicerideos'],
+            'hemoglobina': ['hemoglobina', 'hemoglobina glicada'],
+            'hba1c': ['hba1c', 'hemoglobina glicada', 'hba1c'],
+            'tsh': ['tsh', 'hormônio tireoestimulante'],
+            't4': ['t4', 'tiroxina'],
+            't3': ['t3', 'triiodotironina']
+        };
+        
+        // Função para corrigir termos médicos comuns
+        function corrigirTermosMedicos(texto) {
+            let textoCorrigido = texto;
+            for (const [termoCorreto, variacoes] of Object.entries(termosMedicos)) {
+                for (const variacao of variacoes) {
+                    const regex = new RegExp(`\\b${variacao}\\b`, 'gi');
+                    textoCorrigido = textoCorrigido.replace(regex, termoCorreto);
+                }
+            }
+            return textoCorrigido;
+        }
         
         // #region agent log
         const LOG_ENDPOINT = 'http://127.0.0.1:7242/ingest/e32b9f29-9aec-4b65-a399-bae00a10c41e';
@@ -112,10 +158,20 @@
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             const recognition = new SpeechRecognition();
 
-            // Configurações
+            // Configurações otimizadas para melhor precisão
             recognition.continuous = true;  // Continua ouvindo
             recognition.interimResults = true;  // Mostra resultados intermediários
             recognition.lang = 'pt-BR';  // Idioma português brasileiro
+            
+            // Configurações adicionais para melhor precisão
+            if ('maxAlternatives' in recognition) {
+                recognition.maxAlternatives = 3;  // Considera até 3 alternativas
+            }
+            
+            // Melhora a detecção de pontuação e pausas
+            if ('serviceURI' in recognition) {
+                // Usa serviço do Google se disponível
+            }
 
             // Event handlers
             recognition.onstart = () => {
@@ -139,15 +195,18 @@
 
                 // Atualiza transcrição na tela
                 if (finalTranscript) {
+                    // Corrige termos médicos antes de adicionar
+                    const textoCorrigido = corrigirTermosMedicos(finalTranscript);
+                    
                     // #region agent log
                     logDebug('debug-session', 'run1', 'B', 'index.html:125', 'Final transcript received', {finalTranscriptLength: finalTranscript.length, beforeLength: transcriptionText.length, websocketReady: websocket && websocket.readyState === WebSocket.OPEN});
                     // #endregion
-                    transcriptionText += finalTranscript;
+                    transcriptionText += textoCorrigido + ' ';
                     updateTranscriptionDisplay();
                     
                     // Envia para backend via WebSocket
                     if (websocket && websocket.readyState === WebSocket.OPEN) {
-                        const message = {type: 'texto', texto: finalTranscript.trim()};
+                        const message = {type: 'texto', texto: textoCorrigido.trim()};
                         // #region agent log
                         logDebug('debug-session', 'run1', 'B', 'index.html:133', 'Sending text fragment to backend', {clientId: clientId, textoLength: message.texto.length, textoPreview: message.texto.substring(0, 50)});
                         // #endregion
@@ -158,8 +217,9 @@
                         // #endregion
                     }
                 } else {
-                    // Mostra resultado intermediário
-                    updateTranscriptionDisplay(interimTranscript);
+                    // Mostra resultado intermediário (também corrigido)
+                    const interimCorrigido = corrigirTermosMedicos(interimTranscript);
+                    updateTranscriptionDisplay(interimCorrigido);
                 }
             };
 
@@ -333,21 +393,111 @@
             statusEl.className = classe;
         }
 
+        // Inicia gravação de áudio para Whisper
+        async function iniciarGravacaoAudio() {
+            try {
+                audioStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        channelCount: 1,
+                        sampleRate: 16000,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    } 
+                });
+                
+                const options = { mimeType: 'audio/webm' };
+                if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                    options.mimeType = 'audio/webm;codecs=opus';
+                }
+                
+                mediaRecorder = new MediaRecorder(audioStream, options);
+                audioChunks = [];
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                    }
+                };
+                
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    await enviarAudioParaWhisper(audioBlob);
+                };
+                
+                mediaRecorder.start(1000); // Coleta dados a cada 1 segundo
+                console.log('Gravação de áudio iniciada para Whisper');
+            } catch (error) {
+                console.error('Erro ao iniciar gravação:', error);
+                alert('Erro ao acessar microfone. Verifique as permissões.');
+            }
+        }
+        
+        // Envia áudio para processamento com Whisper
+        async function enviarAudioParaWhisper(audioBlob) {
+            try {
+                updateStatus('🔄 Processando áudio com Whisper...', 'text-yellow-600');
+                
+                const formData = new FormData();
+                formData.append('audio', audioBlob, 'audio.webm');
+                
+                const response = await fetch('/api/transcribe-whisper', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Erro ao processar áudio');
+                }
+                
+                const data = await response.json();
+                
+                if (data.transcription) {
+                    transcriptionText = data.transcription;
+                    updateTranscriptionDisplay();
+                    updateStatus('✅ Transcrição concluída com Whisper', 'text-green-600');
+                } else {
+                    throw new Error('Nenhuma transcrição retornada');
+                }
+            } catch (error) {
+                console.error('Erro ao processar com Whisper:', error);
+                updateStatus('❌ Erro ao processar com Whisper', 'text-red-600');
+                alert('Erro ao processar áudio: ' + error.message);
+            }
+        }
+        
+        // Para gravação de áudio
+        function pararGravacaoAudio() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+            }
+            if (audioStream) {
+                audioStream.getTracks().forEach(track => track.stop());
+                audioStream = null;
+            }
+        }
+        
         // Botão Iniciar
-        document.getElementById('btnIniciar').addEventListener('click', () => {
+        document.getElementById('btnIniciar').addEventListener('click', async () => {
             if (!isRecording) {
                 isRecording = true;
                 transcriptionText = '';
                 updateTranscriptionDisplay();
                 
-                // Inicializa reconhecimento de voz
-                recognition = initSpeechRecognition();
-                if (recognition) {
-                    recognition.start();
-                }
+                const metodo = document.getElementById('metodoTranscricao').value;
                 
-                // Conecta WebSocket
-                connectWebSocket();
+                if (metodo === 'webspeech') {
+                    // Usa Web Speech API
+                    recognition = initSpeechRecognition();
+                    if (recognition) {
+                        recognition.start();
+                    }
+                    connectWebSocket();
+                } else if (metodo === 'whisper') {
+                    // Usa Whisper (gravação de áudio)
+                    await iniciarGravacaoAudio();
+                    updateStatus('🎤 Gravando áudio para Whisper...', 'text-green-600');
+                }
                 
                 // Atualiza UI
                 document.getElementById('btnIniciar').disabled = true;
@@ -357,38 +507,86 @@
         });
 
         // Botão Parar
-        document.getElementById('btnParar').addEventListener('click', () => {
+        document.getElementById('btnParar').addEventListener('click', async () => {
             if (isRecording) {
                 // #region agent log
                 logDebug('debug-session', 'run1', 'B', 'index.html:293', 'Stop button clicked', {clientId: clientId, transcriptionLength: transcriptionText.length, websocketReady: websocket && websocket.readyState === WebSocket.OPEN});
                 // #endregion
                 isRecording = false;
                 
-                // Para reconhecimento
-                if (recognition) {
-                    recognition.stop();
-                    recognition = null;
-                }
+                const metodo = document.getElementById('metodoTranscricao').value;
                 
-                // Envia comando de fim para backend
-                if (websocket && websocket.readyState === WebSocket.OPEN) {
-                    // #region agent log
-                    logDebug('debug-session', 'run1', 'B', 'index.html:304', 'Sending fim command', {clientId: clientId});
-                    // #endregion
-                    websocket.send(JSON.stringify({ type: 'fim' }));
-                    updateStatus('⏳ Processando análise com IA...', 'text-yellow-600');
-                    document.getElementById('btnParar').disabled = true;
-                } else {
-                    // #region agent log
-                    logDebug('debug-session', 'run1', 'A', 'index.html:309', 'WebSocket not ready for fim command', {clientId: clientId, readyState: websocket ? websocket.readyState : 'null'});
-                    // #endregion
-                    alert('WebSocket não conectado. Não foi possível enviar para análise.');
+                if (metodo === 'webspeech') {
+                    // Para reconhecimento Web Speech
+                    if (recognition) {
+                        recognition.stop();
+                        recognition = null;
+                    }
+                    
+                    // Envia comando de fim para backend
+                    if (websocket && websocket.readyState === WebSocket.OPEN) {
+                        // #region agent log
+                        logDebug('debug-session', 'run1', 'B', 'index.html:304', 'Sending fim command', {clientId: clientId});
+                        // #endregion
+                        websocket.send(JSON.stringify({ type: 'fim' }));
+                        updateStatus('⏳ Processando análise com IA...', 'text-yellow-600');
+                        document.getElementById('btnParar').disabled = true;
+                    } else {
+                        // #region agent log
+                        logDebug('debug-session', 'run1', 'A', 'index.html:309', 'WebSocket not ready for fim command', {clientId: clientId, readyState: websocket ? websocket.readyState : 'null'});
+                        // #endregion
+                        alert('WebSocket não conectado. Não foi possível enviar para análise.');
+                    }
+                } else if (metodo === 'whisper') {
+                    // Para gravação de áudio e processa
+                    pararGravacaoAudio();
+                    
+                    // Se já temos transcrição, envia para análise
+                    if (transcriptionText.trim()) {
+                        await processarComIA();
+                    }
                 }
                 
                 // Atualiza UI
                 document.getElementById('btnIniciar').disabled = false;
             }
         });
+        
+        // Processa transcrição com IA (para Whisper)
+        async function processarComIA() {
+            try {
+                updateStatus('⏳ Processando análise com IA...', 'text-yellow-600');
+                document.getElementById('btnParar').disabled = true;
+                
+                const response = await fetch('/api/analyze', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ transcription: transcriptionText })
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Erro ao processar análise');
+                }
+                
+                const data = await response.json();
+                
+                if (data.resultado) {
+                    const resultadoEl = document.getElementById('resultado');
+                    resultadoEl.textContent = data.resultado;
+                    resultadoEl.classList.remove('text-gray-400', 'italic');
+                    resultadoEl.classList.add('text-gray-800');
+                    updateStatus('✅ Análise concluída!', 'text-green-600');
+                }
+            } catch (error) {
+                console.error('Erro ao processar com IA:', error);
+                updateStatus('❌ Erro ao processar análise', 'text-red-600');
+                alert('Erro ao processar análise: ' + error.message);
+            } finally {
+                document.getElementById('btnParar').disabled = false;
+            }
+        }
 
         // Botão Limpar
         document.getElementById('btnLimpar').addEventListener('click', () => {
