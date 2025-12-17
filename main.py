@@ -1,307 +1,284 @@
+# main.py ATUALIZADO
 import os
+import io
 import json
-import tempfile
-import subprocess
-from typing import List
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, UploadFile, File
-from fastapi.templating import Jinja2Templates
+from fastapi import FastAPI, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from fastapi.requests import Request
 from groq import Groq
 from dotenv import load_dotenv
 
-# 1. Carrega variáveis de ambiente (.env) - apenas em desenvolvimento
-# Em produção (Render.com), as variáveis vêm das configurações do serviço
 load_dotenv()
 
-# Verifica se a chave existe (pode vir de .env ou variáveis de ambiente do sistema)
-if not os.getenv("GROQ_API_KEY"):
-    raise ValueError(
-        "A chave GROQ_API_KEY não foi encontrada. "
-        "Configure-a no arquivo .env (desenvolvimento) ou nas variáveis de ambiente (produção)."
-    )
-
-# Verifica se OPENAI_API_KEY existe (opcional, para Whisper)
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-USE_WHISPER = OPENAI_API_KEY is not None
-
-# 2. Configuração do Cliente Groq
-client_groq = Groq(
-    api_key=os.environ.get("GROQ_API_KEY"),
-)
-
-# 3. Configuração do App e Templates
 app = FastAPI(
-    title="MVP Doctor AI Scribe",
-    description="Sistema de transcrição e análise de consultas médicas com IA"
+    title="medIA - Sistema de Transcrição e Análise",
+    description="Sistema de transcrição de áudio com análise de IA",
+    version="1.0.0"
 )
 templates = Jinja2Templates(directory="templates")
 
-# 4. Prompt de Sistema (Especialista em Endocrinologia + SOAP)
-SYSTEM_PROMPT = """
-Você é um Médico Endocrinologista Sênior, renomado por sua precisão clínica e humanização.
-Sua tarefa é analisar a transcrição bruta de uma consulta médica e estruturar as informações seguindo rigorosamente o protocolo SOAP.
-Ao final, você deve gerar o rascunho de todos os documentos médicos necessários (Receituários, Pedidos de Exame, Atestados) baseados na conduta clínica definida.
+# Armazena transcrições por cliente
+client_transcriptions = {}
 
-DIRETRIZES DE ANÁLISE:
-1. Ignore erros gramaticais ou de concordância advindos da transcrição automática, focando no contexto clínico.
-2. Identifique nuances endocrinológicas (metabolismo, tireoide, diabetes, obesidade, hormônios, rotina alimentar e sono).
-3. Seja formal, técnico e objetivo na estrutura SOAP.
+def get_groq_client():
+    """Retorna cliente Groq, criando apenas quando necessário"""
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        raise ValueError("GROQ_API_KEY não configurada no arquivo .env")
+    return Groq(api_key=api_key)
 
-ESTRUTURA DE RESPOSTA OBRIGATÓRIA:
+# Lê o prompt do arquivo .env, com valor padrão caso não esteja definido
+SYSTEM_PROMPT = os.environ.get(
+    "SYSTEM_PROMPT",
+    """Você é um Médico Endocrinologista Sênior. 
+Analise a transcrição e gere um relatório SOAP completo e documentos para emissão.
+(Mantenha o prompt detalhado que criamos anteriormente aqui)"""
+)
 
---- INÍCIO DO PRONTUÁRIO (SOAP) ---
+# Log para confirmar qual prompt está sendo usado
+if os.environ.get("SYSTEM_PROMPT"):
+    print("✅ SYSTEM_PROMPT carregado do arquivo .env")
+else:
+    print("ℹ️  Usando SYSTEM_PROMPT padrão (defina SYSTEM_PROMPT no .env para personalizar)")
 
-# 1. SUBJETIVO (S)
-- **Queixa Principal (QP):** O motivo da consulta.
-- **História da Moléstia Atual (HMA):** Narrativa dos sintomas, tempo de evolução.
-- **Histórico Patológico/Familiar:** Doenças prévias, histórico familiar relevante.
-- **Estilo de Vida:** Alimentação, atividade física, sono, tabagismo/etilismo.
-
-# 2. OBJETIVO (O)
-- **Dados Vitais e Antropometria:** (Extraia se citado: Peso, Altura, IMC, PA, Glicemia).
-- **Exame Físico:** (Extraia se citado: tireoide, pele, edemas).
-
-# 3. AVALIAÇÃO (A)
-- **Hipóteses Diagnósticas:** Liste as prováveis condições.
-- **Raciocínio Clínico:** Breve justificativa endocrinológica.
-
-# 4. PLANO (P)
-- **Conduta Terapêutica:** Medicamentos prescritos ou ajustados.
-- **Orientações:** Mudanças de estilo de vida.
-- **Seguimento:** Retorno.
-
---- FIM DO PRONTUÁRIO ---
-
---- DOCUMENTOS PARA EMISSÃO ---
-(Gere o texto exato para o documento, pronto para assinatura)
-
-[DOCUMENTO 1: RECEITUÁRIO MÉDICO]
-- Nome do Paciente: (Use "Paciente" se não identificado)
-- Via de administração:
-- Medicamento + Concentração
-- Posologia detalhada
-- Quantidade
-
-[DOCUMENTO 2: PEDIDO DE EXAMES]
-- Lista de exames (Ex: TSH, T4 Livre, Glicemia, HbA1c, etc.)
-- Justificativa (se aplicável)
-
---- FIM DOS DOCUMENTOS ---
-"""
-
-# Função auxiliar para chamar a IA
-def process_with_groq(full_text: str):
-    try:
-        chat_completion = client_groq.chat.completions.create(
-            messages=[
-                {
-                    "role": "system",
-                    "content": SYSTEM_PROMPT
-                },
-                {
-                    "role": "user",
-                    "content": f"Transcrição da consulta para análise:\n\n{full_text}",
-                }
-            ],
-            model="llama-3.3-70b-versatile",  # Modelo atualizado (substitui llama3-70b-8192 descontinuado)
-            temperature=0.3, # Baixa temperatura para precisão técnica
-        )
-        return chat_completion.choices[0].message.content
-    except Exception as e:
-        return f"Erro ao processar com a IA: {str(e)}"
-
-# Função para transcrever áudio com Whisper
-async def transcribe_with_whisper(audio_file_path: str) -> str:
-    """Transcreve áudio usando Whisper API da OpenAI"""
-    try:
-        if not USE_WHISPER:
-            return "Erro: OPENAI_API_KEY não configurada. Configure no arquivo .env"
-        
-        import openai
-        client_openai = openai.OpenAI(api_key=OPENAI_API_KEY)
-        
-        with open(audio_file_path, "rb") as audio_file:
-            transcript = client_openai.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                language="pt",
-                response_format="text"
-            )
-        
-        return transcript if isinstance(transcript, str) else transcript.text
-    except ImportError:
-        return "Erro: Biblioteca openai não instalada. Execute: pip install openai"
-    except Exception as e:
-        return f"Erro ao transcrever com Whisper: {str(e)}"
-
-# Health check endpoint para Render
-@app.get("/health")
-async def health_check():
-    """Endpoint de health check para monitoramento"""
-    return {"status": "ok", "service": "medIA"}
-
-# Rota Principal (Frontend)
 @app.get("/", response_class=HTMLResponse)
-async def get(request: Request):
+async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
-# Endpoint para transcrição com Whisper
-@app.post("/api/transcribe-whisper")
-async def transcribe_whisper_endpoint(audio: UploadFile = File(...)):
-    """Recebe áudio e retorna transcrição usando Whisper"""
-    if not USE_WHISPER:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Whisper não configurado. Adicione OPENAI_API_KEY no arquivo .env"}
-        )
+@app.get("/health")
+async def health():
+    """Endpoint de health check"""
+    return {"status": "ok", "service": "medIA"}
+
+@app.websocket("/ws/{client_id}")
+async def websocket_endpoint(websocket: WebSocket, client_id: str):
+    print(f"🔌 Tentativa de conexão WebSocket do cliente: {client_id}")
+    try:
+        await websocket.accept()
+        print(f"✅ WebSocket conectado: {client_id}")
+        client_transcriptions[client_id] = ""
+    except Exception as e:
+        print(f"❌ Erro ao aceitar conexão WebSocket: {e}")
+        return
     
     try:
-        # Salva arquivo temporário
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp_file:
-            content = await audio.read()
-            tmp_file.write(content)
-            tmp_path = tmp_file.name
-        
-        # Converte para formato compatível com Whisper (mp3 ou wav)
-        # Whisper aceita webm, mas vamos garantir compatibilidade
-        output_path = tmp_path.replace(".webm", ".mp3")
-        
-        try:
-            # Tenta converter usando ffmpeg se disponível
-            subprocess.run(
-                ["ffmpeg", "-i", tmp_path, "-y", "-acodec", "libmp3lame", output_path],
-                check=True,
-                capture_output=True
-            )
-            audio_path = output_path
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            # Se ffmpeg não estiver disponível, tenta usar o arquivo original
-            audio_path = tmp_path
-        
-        # Transcreve
-        transcription = await transcribe_with_whisper(audio_path)
-        
-        # Limpa arquivos temporários
-        try:
-            os.unlink(tmp_path)
-            if audio_path != tmp_path:
-                os.unlink(audio_path)
-        except:
-            pass
-        
-        return JSONResponse(content={"transcription": transcription})
-    
+        while True:
+            data = await websocket.receive_text()
+            message = json.loads(data)
+            print(f"📨 Mensagem recebida de {client_id}: {message.get('type', 'unknown')}")
+            
+            if message.get("type") == "texto":
+                # Acumula transcrição
+                texto = message.get("texto", "")
+                if client_id in client_transcriptions:
+                    client_transcriptions[client_id] += " " + texto
+                await websocket.send_json({"type": "confirmacao", "status": "recebido"})
+                
+            elif message.get("type") == "fim":
+                # Processa análise quando recebe comando de fim
+                transcription = client_transcriptions.get(client_id, "")
+                if transcription.strip():
+                    try:
+                        client = get_groq_client()
+                        print("Iniciando análise clínica...")
+                        chat_completion = client.chat.completions.create(
+                            messages=[
+                                {"role": "system", "content": SYSTEM_PROMPT},
+                                {"role": "user", "content": transcription}
+                            ],
+                            model="llama-3.3-70b-versatile",
+                            temperature=0.3
+                        )
+                        
+                        resultado = chat_completion.choices[0].message.content
+                        await websocket.send_json({
+                            "type": "analise_completa",
+                            "resultado": resultado
+                        })
+                    except Exception as e:
+                        print(f"Erro na análise: {e}")
+                        await websocket.send_json({
+                            "type": "erro",
+                            "mensagem": str(e)
+                        })
+                else:
+                    await websocket.send_json({
+                        "type": "erro",
+                        "mensagem": "Nenhuma transcrição disponível para análise"
+                    })
+                    
+            elif message.get("type") == "limpar":
+                client_transcriptions[client_id] = ""
+                await websocket.send_json({"type": "confirmacao", "status": "limpo"})
+                
+    except WebSocketDisconnect:
+        print(f"🔌 Cliente {client_id} desconectado normalmente")
     except Exception as e:
+        print(f"❌ Erro no WebSocket {client_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        try:
+            await websocket.send_json({"type": "erro", "mensagem": str(e)})
+        except:
+            print(f"   Não foi possível enviar mensagem de erro ao cliente")
+    finally:
+        if client_id in client_transcriptions:
+            del client_transcriptions[client_id]
+            print(f"🧹 Limpeza: transcrição do cliente {client_id} removida")
+
+@app.post("/api/transcribe-whisper")
+async def transcribe_whisper(audio: UploadFile = File(...)):
+    try:
+        audio_content = await audio.read()
+        
+        print("Iniciando transcrição com Groq Whisper...")
+        client = get_groq_client()
+        transcription = client.audio.transcriptions.create(
+            file=(audio.filename, audio_content),
+            model="whisper-large-v3",
+            response_format="text",
+            language="pt"
+        )
+        
+        print(f"Transcrição concluída: {len(transcription)} caracteres.")
+        return {"transcription": transcription}
+        
+    except Exception as e:
+        print(f"Erro na transcrição: {e}")
         return JSONResponse(
             status_code=500,
-            content={"error": f"Erro ao processar áudio: {str(e)}"}
+            content={"error": str(e)}
         )
 
-# Endpoint para análise de transcrição
 @app.post("/api/analyze")
-async def analyze_endpoint(request: Request):
-    """Recebe transcrição e retorna análise com IA"""
+async def analyze(request: Request):
     try:
-        data = await request.json()
-        transcription = data.get("transcription", "")
+        body = await request.json()
+        transcription = body.get("transcription", "")
         
-        if not transcription:
+        if not transcription.strip():
             return JSONResponse(
                 status_code=400,
                 content={"error": "Transcrição vazia"}
             )
         
-        ai_report = process_with_groq(transcription)
+        print("Iniciando análise clínica...")
+        client = get_groq_client()
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": transcription}
+            ],
+                            model="llama-3.3-70b-versatile",
+            temperature=0.3
+        )
         
-        return JSONResponse(content={"resultado": ai_report})
-    
+        resultado = chat_completion.choices[0].message.content
+        return {"resultado": resultado}
+        
+    except Exception as e:
+        print(f"Erro na análise: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )
+
+@app.post("/upload-audio")
+async def handle_audio(file: UploadFile = File(...)):
+    try:
+        # 1. Ler o arquivo de áudio recebido do frontend
+        audio_content = await file.read()
+        
+        # 2. Transcrever usando Groq (Whisper Large V3)
+        print("Iniciando transcrição com Groq Whisper...")
+        client = get_groq_client()
+        transcription = client.audio.transcriptions.create(
+            file=(file.filename, audio_content),
+            model="whisper-large-v3",
+            response_format="text",
+            language="pt"
+        )
+        
+        print(f"Transcrição concluída: {len(transcription)} caracteres.")
+
+        # 3. Analisar com Llama 3 (Também na Groq)
+        print("Iniciando análise clínica...")
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": transcription}
+            ],
+                            model="llama-3.3-70b-versatile",
+            temperature=0.3
+        )
+        
+        return {"report": chat_completion.choices[0].message.content}
+
     except Exception as e:
         return JSONResponse(
             status_code=500,
-            content={"error": f"Erro ao processar análise: {str(e)}"}
+            content={"error": str(e)}
         )
 
-# Rota WebSocket (aceita client_id dinâmico)
-@app.websocket("/ws/{client_id}")
-async def websocket_endpoint(websocket: WebSocket, client_id: str):
-    await websocket.accept()
-    transcription_buffer = []
+if __name__ == "__main__":
+    import uvicorn
+    import sys
+    
+    print("=" * 60)
+    print("🚀 INICIANDO SERVIDOR medIA")
+    print("=" * 60)
+    print("📍 URL Local: http://localhost:8000")
+    print("📍 URL Local: http://127.0.0.1:8000")
+    print("📍 Health Check: http://localhost:8000/health")
+    print("=" * 60)
+    print("⚠️  Mantenha este terminal aberto enquanto usar o sistema")
+    print("⚠️  Pressione Ctrl+C para parar o servidor")
+    print("=" * 60)
+    print()
+    
+    # Verifica se a porta está em uso
+    import socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    result = sock.connect_ex(('127.0.0.1', 8000))
+    sock.close()
+    if result == 0:
+        print("⚠️  AVISO: A porta 8000 já está em uso!")
+        print("   Pode haver outro servidor rodando.")
+        print("   Se quiser continuar mesmo assim, pressione Enter...")
+        print("   Ou pressione Ctrl+C para cancelar e parar o outro processo")
+        try:
+            input()
+        except KeyboardInterrupt:
+            print("\nCancelado pelo usuário")
+            sys.exit(0)
     
     try:
-        while True:
-            # Recebe dados do frontend (pode ser texto ou JSON)
-            data = await websocket.receive_text()
-            
-            # Tenta parsear como JSON
-            try:
-                message = json.loads(data)
-                message_type = message.get("type")
-                
-                if message_type == "fim":
-                    # Protocolo de Encerramento
-                    if not transcription_buffer:
-                        await websocket.send_json({
-                            "type": "erro",
-                            "mensagem": "Nenhuma voz detectada para analisar."
-                        })
-                    else:
-                        await websocket.send_json({
-                            "type": "confirmacao",
-                            "status": "Processando análise clínica... Aguarde..."
-                        })
-                        
-                        # 1. Junta todo o texto acumulado
-                        full_text = " ".join(transcription_buffer)
-                        print(f"Texto total capturado: {len(full_text)} caracteres")
-                        
-                        # 2. Envia para a Groq
-                        ai_report = process_with_groq(full_text)
-                        
-                        # 3. Devolve o relatório para o Frontend em formato JSON
-                        await websocket.send_json({
-                            "type": "analise_completa",
-                            "resultado": ai_report
-                        })
-                    
-                    # Fecha conexão após enviar o relatório
-                    break
-                    
-                elif message_type == "texto":
-                    # Recebe texto da transcrição
-                    texto = message.get("texto", "").strip()
-                    if texto:
-                        print(f"Recebido trecho: {texto}")
-                        transcription_buffer.append(texto)
-                        
-            except json.JSONDecodeError:
-                # Se não for JSON, trata como texto simples (compatibilidade)
-                if data == ">>FINALIZE<<":
-                    if not transcription_buffer:
-                        await websocket.send_text("Erro: Nenhuma voz detectada para analisar.")
-                    else:
-                        await websocket.send_text("Processando análise clínica... Aguarde...")
-                        
-                        full_text = " ".join(transcription_buffer)
-                        print(f"Texto total capturado: {len(full_text)} caracteres")
-                        
-                        ai_report = process_with_groq(full_text)
-                        await websocket.send_text(ai_report)
-                    
-                    break
-                else:
-                    # Texto simples
-                    print(f"Recebido trecho: {data}")
-                    transcription_buffer.append(data)
-                
-    except WebSocketDisconnect:
-        print("Cliente desconectado")
+        print("✅ Iniciando servidor...\n")
+        # Usa string de importação para permitir reload
+        uvicorn.run(
+            "main:app", 
+            host="0.0.0.0", 
+            port=8000, 
+            reload=True, 
+            log_level="info"
+        )
+    except KeyboardInterrupt:
+        print("\n\n" + "=" * 60)
+        print("🛑 SERVIDOR PARADO PELO USUÁRIO")
+        print("=" * 60)
+    except OSError as e:
+        if "Address already in use" in str(e):
+            print(f"\n❌ ERRO: Porta 8000 já está em uso!")
+            print("   Execute: lsof -ti:8000 | xargs kill")
+            print("   Ou mude a porta no código")
+        else:
+            print(f"\n❌ Erro ao iniciar servidor: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
     except Exception as e:
-        print(f"Erro no WebSocket: {e}")
-        try:
-            await websocket.send_json({
-                "type": "erro",
-                "mensagem": str(e)
-            })
-        except:
-            pass
+        print(f"\n❌ Erro ao iniciar servidor: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

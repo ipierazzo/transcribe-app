@@ -283,11 +283,61 @@
             return recognition;
         }
 
+        // Verifica se o servidor está disponível
+        async function verificarServidor() {
+            // Tenta múltiplos endpoints
+            const endpoints = ['/health', '/api/health', '/'];
+            
+            for (const endpoint of endpoints) {
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 2000);
+                    
+                    const response = await fetch(endpoint, { 
+                        method: 'GET',
+                        signal: controller.signal
+                    });
+                    clearTimeout(timeoutId);
+                    
+                    if (response.ok || response.status === 200) {
+                        console.log(`✅ Servidor está online (endpoint: ${endpoint})`);
+                        return true;
+                    }
+                } catch (error) {
+                    if (error.name !== 'AbortError') {
+                        console.log(`   Tentativa com ${endpoint} falhou:`, error.message);
+                    }
+                    // Continua tentando outros endpoints
+                }
+            }
+            
+            console.error('❌ Nenhum endpoint respondeu');
+            return false;
+        }
+        
         // Conecta WebSocket
-        function connectWebSocket() {
+        let reconnectAttempts = 0;
+        const MAX_RECONNECT_ATTEMPTS = 5;
+        
+        async function connectWebSocket() {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                console.log('WebSocket já está conectado');
+                return;
+            }
+            
+            // Verifica se o servidor está online antes de tentar conectar
+            const servidorOnline = await verificarServidor();
+            if (!servidorOnline) {
+                console.warn('Servidor não está respondendo, pulando conexão WebSocket');
+                updateStatus('⚠️ Servidor não está respondendo. Execute: python main.py no terminal', 'text-yellow-600');
+                // Não retorna, permite que continue sem WebSocket (modo offline)
+                console.log('Continuando em modo offline (sem WebSocket)');
+            }
+            
             clientId = generateClientId();
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = `${protocol}//${window.location.host}/ws/${clientId}`;
+            console.log(`Tentando conectar WebSocket: ${wsUrl}`);
             // #region agent log
             logDebug('debug-session', 'run1', 'A', 'index.html:201', 'WebSocket connection attempt', {clientId: clientId, wsUrl: wsUrl});
             // #endregion
@@ -295,7 +345,8 @@
             websocket = new WebSocket(wsUrl);
 
             websocket.onopen = () => {
-                console.log('WebSocket conectado');
+                console.log('✅ WebSocket conectado com sucesso');
+                reconnectAttempts = 0; // Reset contador de tentativas
                 // #region agent log
                 logDebug('debug-session', 'run1', 'A', 'index.html:208', 'WebSocket opened', {clientId: clientId, readyState: websocket.readyState});
                 // #endregion
@@ -349,26 +400,44 @@
             };
 
             websocket.onerror = (error) => {
-                console.error('Erro no WebSocket:', error);
+                console.error('❌ Erro no WebSocket:', error);
+                console.error('   URL tentada:', wsUrl);
                 // #region agent log
-                logDebug('debug-session', 'run1', 'A', 'index.html:245', 'WebSocket error', {clientId: clientId, error: error.toString()});
+                logDebug('debug-session', 'run1', 'A', 'index.html:245', 'WebSocket error', {clientId: clientId, error: error.toString(), wsUrl: wsUrl});
                 // #endregion
-                updateStatus('❌ Erro na conexão WebSocket', 'text-red-600');
+                updateStatus('❌ Erro na conexão WebSocket. Verifique se o servidor está rodando.', 'text-red-600');
             };
 
-            websocket.onclose = () => {
-                console.log('WebSocket desconectado');
+            websocket.onclose = (event) => {
+                console.log('🔌 WebSocket desconectado', {
+                    code: event.code,
+                    reason: event.reason,
+                    wasClean: event.wasClean
+                });
                 // #region agent log
-                logDebug('debug-session', 'run1', 'A', 'index.html:252', 'WebSocket closed', {clientId: clientId, isRecording: isRecording, readyState: websocket.readyState});
+                logDebug('debug-session', 'run1', 'A', 'index.html:252', 'WebSocket closed', {
+                    clientId: clientId, 
+                    isRecording: isRecording, 
+                    readyState: websocket.readyState,
+                    closeCode: event.code,
+                    closeReason: event.reason
+                });
                 // #endregion
+                
                 if (isRecording) {
-                    updateStatus('⚠️ Conexão perdida. Tentando reconectar...', 'text-yellow-600');
-                    // Tenta reconectar após 2 segundos
-                    setTimeout(() => {
-                        if (isRecording) {
-                            connectWebSocket();
-                        }
-                    }, 2000);
+                    reconnectAttempts++;
+                    if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
+                        updateStatus(`⚠️ Conexão perdida. Tentando reconectar... (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`, 'text-yellow-600');
+                        // Tenta reconectar após 2 segundos
+                        setTimeout(() => {
+                            if (isRecording) {
+                                connectWebSocket();
+                            }
+                        }, 2000);
+                    } else {
+                        updateStatus('❌ Falha ao reconectar. Verifique se o servidor está rodando.', 'text-red-600');
+                        console.error('Máximo de tentativas de reconexão atingido');
+                    }
                 }
             };
         }
@@ -492,7 +561,13 @@
                     if (recognition) {
                         recognition.start();
                     }
-                    connectWebSocket();
+                    // Tenta conectar WebSocket, mas continua funcionando mesmo se falhar
+                    try {
+                        connectWebSocket();
+                    } catch (e) {
+                        console.warn('WebSocket não disponível, usando modo offline:', e);
+                        updateStatus('⚠️ Modo offline - transcrição local apenas', 'text-yellow-600');
+                    }
                 } else if (metodo === 'whisper') {
                     // Usa Whisper (gravação de áudio)
                     await iniciarGravacaoAudio();
@@ -523,7 +598,7 @@
                         recognition = null;
                     }
                     
-                    // Envia comando de fim para backend
+                    // Tenta usar WebSocket, se não funcionar, usa API HTTP
                     if (websocket && websocket.readyState === WebSocket.OPEN) {
                         // #region agent log
                         logDebug('debug-session', 'run1', 'B', 'index.html:304', 'Sending fim command', {clientId: clientId});
@@ -532,10 +607,13 @@
                         updateStatus('⏳ Processando análise com IA...', 'text-yellow-600');
                         document.getElementById('btnParar').disabled = true;
                     } else {
-                        // #region agent log
-                        logDebug('debug-session', 'run1', 'A', 'index.html:309', 'WebSocket not ready for fim command', {clientId: clientId, readyState: websocket ? websocket.readyState : 'null'});
-                        // #endregion
-                        alert('WebSocket não conectado. Não foi possível enviar para análise.');
+                        // Fallback: usa API HTTP se WebSocket não estiver disponível
+                        console.log('WebSocket não disponível, usando API HTTP para análise');
+                        if (transcriptionText.trim()) {
+                            await processarComIA();
+                        } else {
+                            alert('Nenhuma transcrição disponível para análise.');
+                        }
                     }
                 } else if (metodo === 'whisper') {
                     // Para gravação de áudio e processa

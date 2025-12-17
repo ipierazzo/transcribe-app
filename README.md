@@ -31,7 +31,15 @@ pip install -r requirements.txt
 ```bash
 GROQ_API_KEY=sua_chave_groq_aqui
 GROQ_MODEL=llama-3.3-70b-versatile  # Opcional: modelo a ser usado (padrão: llama-3.3-70b-versatile)
+
+# Opcional: Personalize o prompt do sistema para análise
+SYSTEM_PROMPT="Você é um Médico Endocrinologista Sênior. Analise a transcrição e gere um relatório SOAP completo e documentos para emissão."
 ```
+
+   **Nota sobre SYSTEM_PROMPT:**
+   - Se não definido, será usado o prompt padrão
+   - Você pode usar múltiplas linhas no .env usando aspas
+   - O prompt define como a IA analisa as transcrições
 
    **Modelos alternativos disponíveis:**
    - `llama-3.3-70b-versatile` (padrão, recomendado)
